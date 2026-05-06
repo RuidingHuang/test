@@ -33,6 +33,49 @@ async function classifyText(
   return (await response.json()) as ClassificationResponse;
 }
 
+async function fetchSharedComments(): Promise<DemoComment[]> {
+  const response = await fetch("/api/comments", {
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error("Unable to load shared comments.");
+  }
+
+  return (await response.json()) as DemoComment[];
+}
+
+async function createSharedComment(text: string): Promise<DemoComment> {
+  const response = await fetch("/api/comments", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ text, user: "You" }),
+  });
+
+  if (!response.ok) {
+    const data = (await response.json().catch(() => null)) as
+      | { detail?: string }
+      | null;
+    throw new Error(data?.detail ?? "Unable to save comment.");
+  }
+
+  return (await response.json()) as DemoComment;
+}
+
+async function clearSharedCustomComments(): Promise<DemoComment[]> {
+  const response = await fetch("/api/comments", {
+    method: "DELETE",
+  });
+
+  if (!response.ok) {
+    throw new Error("Unable to clear comments.");
+  }
+
+  return (await response.json()) as DemoComment[];
+}
+
 function shouldHideComment(
   predictedLabels: ModerationLabel[],
   blockedLabels: ModerationLabel[],
@@ -62,7 +105,39 @@ export function ModerationDemo() {
   const [threshold, setThreshold] = useState(0.5);
   const [newComment, setNewComment] = useState("");
   const [isClassifying, setIsClassifying] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadComments() {
+      try {
+        const sharedComments = await fetchSharedComments();
+        if (!cancelled) {
+          setComments(sharedComments);
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(
+            loadError instanceof Error
+              ? loadError.message
+              : "Unable to load shared comments.",
+          );
+        }
+      }
+    }
+
+    void loadComments();
+    const intervalId = window.setInterval(() => {
+      void loadComments();
+    }, 4000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -132,7 +207,7 @@ export function ModerationDemo() {
     );
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     const text = newComment.trim();
@@ -141,23 +216,39 @@ export function ModerationDemo() {
       return;
     }
 
-    const nextComment: DemoComment = {
-      id: Date.now(),
-      user: "You",
-      time: "just now",
-      text,
-    };
+    setIsSubmitting(true);
+    setError(null);
 
-    setComments((current) => [nextComment, ...current]);
-    setNewComment("");
+    try {
+      await createSharedComment(text);
+      setNewComment("");
+      setComments(await fetchSharedComments());
+    } catch (submitError) {
+      setError(
+        submitError instanceof Error
+          ? submitError.message
+          : "Unable to save comment.",
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   function resetBlockedLabels() {
     setBlockedLabels([...LABELS]);
   }
 
-  function clearCustomComments() {
-    setComments(SAMPLE_COMMENTS);
+  async function clearCustomComments() {
+    setError(null);
+    try {
+      setComments(await clearSharedCustomComments());
+    } catch (clearError) {
+      setError(
+        clearError instanceof Error
+          ? clearError.message
+          : "Unable to clear comments.",
+      );
+    }
   }
 
   return (
@@ -210,7 +301,7 @@ export function ModerationDemo() {
             />
             <div className="button-row">
               <button type="submit" className="primary-button">
-                Add comment
+                {isSubmitting ? "Adding..." : "Add comment"}
               </button>
               <button
                 type="button"
