@@ -14,6 +14,16 @@ import {
 const CLIENT_NAME_KEY = "comment-moderation-client-name";
 const COMMENT_BATCH_SIZE = 5;
 
+type FeedbackDraft = {
+  baselineLabels: ModerationLabel[];
+  labels: ModerationLabel[];
+  text: string;
+};
+
+type FeedbackRow = {
+  clean_text: string;
+} & Record<ModerationLabel, 0 | 1>;
+
 async function classifyText(text: string): Promise<ClassificationResponse> {
   const response = await fetch("/api/classify", {
     method: "POST",
@@ -79,6 +89,25 @@ async function clearSharedCustomComments(): Promise<DemoComment[]> {
   return (await response.json()) as DemoComment[];
 }
 
+async function importFeedback(rows: FeedbackRow[]): Promise<{ count: number }> {
+  const response = await fetch("/api/feedback", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ rows }),
+  });
+
+  if (!response.ok) {
+    const data = (await response.json().catch(() => null)) as
+      | { detail?: string }
+      | null;
+    throw new Error(data?.detail ?? "Unable to import feedback.");
+  }
+
+  return (await response.json()) as { count: number };
+}
+
 function shouldHideComment(
   predictedLabels: ModerationLabel[],
   blockedLabels: ModerationLabel[],
@@ -123,6 +152,25 @@ function commentsAreEqual(left: DemoComment[], right: DemoComment[]): boolean {
   });
 }
 
+function labelsAreEqual(
+  left: ModerationLabel[],
+  right: ModerationLabel[],
+): boolean {
+  return (
+    left.length === right.length && left.every((label) => right.includes(label))
+  );
+}
+
+function toFeedbackRow(text: string, labels: ModerationLabel[]): FeedbackRow {
+  return LABELS.reduce(
+    (row, label) => {
+      row[label] = labels.includes(label) ? 1 : 0;
+      return row;
+    },
+    { clean_text: text } as FeedbackRow,
+  );
+}
+
 export function ModerationDemo() {
   const [comments, setComments] = useState<DemoComment[]>(SAMPLE_COMMENTS);
   const [runtimeComments, setRuntimeComments] = useState<RuntimeComment[]>(
@@ -138,6 +186,11 @@ export function ModerationDemo() {
   const [clientName, setClientName] = useState("You");
   const [nameDraft, setNameDraft] = useState("");
   const [isNameDialogOpen, setIsNameDialogOpen] = useState(false);
+  const [feedbackDrafts, setFeedbackDrafts] = useState<
+    Record<number, FeedbackDraft>
+  >({});
+  const [isImportingFeedback, setIsImportingFeedback] = useState(false);
+  const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
   const [visibleCommentCount, setVisibleCommentCount] =
     useState(COMMENT_BATCH_SIZE);
   const classificationCache = useRef(new Map<string, ClassificationResponse>());
@@ -252,6 +305,7 @@ export function ModerationDemo() {
     ?.classification?.source;
   const visibleComments = runtimeComments.slice(0, visibleCommentCount);
   const hasMoreComments = visibleCommentCount < runtimeComments.length;
+  const changedFeedback = Object.values(feedbackDrafts);
 
   function toggleLabel(label: ModerationLabel) {
     setBlockedLabels((current) =>
@@ -293,6 +347,63 @@ export function ModerationDemo() {
 
   function resetBlockedLabels() {
     setBlockedLabels([...LABELS]);
+  }
+
+  function toggleFeedbackLabel(
+    comment: RuntimeComment,
+    baselineLabels: ModerationLabel[],
+    label: ModerationLabel,
+  ) {
+    setFeedbackMessage(null);
+    setFeedbackDrafts((current) => {
+      const currentDraft = current[comment.id];
+      const currentLabels = currentDraft?.labels ?? baselineLabels;
+      const nextLabels = currentLabels.includes(label)
+        ? currentLabels.filter((item) => item !== label)
+        : [...currentLabels, label];
+
+      const nextDrafts = { ...current };
+      if (labelsAreEqual(nextLabels, baselineLabels)) {
+        delete nextDrafts[comment.id];
+      } else {
+        nextDrafts[comment.id] = {
+          baselineLabels,
+          labels: nextLabels,
+          text: comment.text,
+        };
+      }
+
+      return nextDrafts;
+    });
+  }
+
+  async function handleImportFeedback() {
+    const rows = changedFeedback.map((draft) =>
+      toFeedbackRow(draft.text, draft.labels),
+    );
+
+    if (rows.length === 0) {
+      setFeedbackMessage("No feedback changes to import.");
+      return;
+    }
+
+    setIsImportingFeedback(true);
+    setError(null);
+    setFeedbackMessage(null);
+
+    try {
+      const result = await importFeedback(rows);
+      setFeedbackDrafts({});
+      setFeedbackMessage(`Imported ${result.count} feedback row(s).`);
+    } catch (feedbackError) {
+      setError(
+        feedbackError instanceof Error
+          ? feedbackError.message
+          : "Unable to import feedback.",
+      );
+    } finally {
+      setIsImportingFeedback(false);
+    }
   }
 
   function handleNameSubmit(event: FormEvent<HTMLFormElement>) {
@@ -399,6 +510,23 @@ export function ModerationDemo() {
 
           <section className="comments-wrap" aria-live="polite">
             {error ? <div className="error-box">{error}</div> : null}
+            <div className="feedback-toolbar">
+              <div>
+                <strong>Feedback changes</strong>
+                <span>{changedFeedback.length}</span>
+              </div>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={changedFeedback.length === 0 || isImportingFeedback}
+                onClick={() => void handleImportFeedback()}
+              >
+                {isImportingFeedback ? "Importing..." : "Import feedback"}
+              </button>
+            </div>
+            {feedbackMessage ? (
+              <div className="success-box">{feedbackMessage}</div>
+            ) : null}
 
             {visibleComments.map((comment) => {
               const predictedLabels = classifyLabelsLocally(
@@ -407,6 +535,9 @@ export function ModerationDemo() {
               );
               const hidden = shouldHideComment(predictedLabels, blockedLabels);
               const visibleTags = predictedLabels;
+              const feedbackLabels =
+                feedbackDrafts[comment.id]?.labels ?? predictedLabels;
+              const feedbackChanged = Boolean(feedbackDrafts[comment.id]);
 
               return (
                 <article className="comment-card" key={comment.id}>
@@ -444,6 +575,35 @@ export function ModerationDemo() {
                     ) : (
                       <p className="comment-text">{comment.text}</p>
                     )}
+
+                    <details className="feedback-dropdown">
+                      <summary>
+                        <span>Feedback</span>
+                        {feedbackChanged ? (
+                          <strong>Edited</strong>
+                        ) : (
+                          <strong>Default</strong>
+                        )}
+                      </summary>
+                      <div className="feedback-options">
+                        {LABELS.map((label) => (
+                          <label className="feedback-option" key={label}>
+                            <input
+                              type="checkbox"
+                              checked={feedbackLabels.includes(label)}
+                              onChange={() =>
+                                toggleFeedbackLabel(
+                                  comment,
+                                  predictedLabels,
+                                  label,
+                                )
+                              }
+                            />
+                            <span>{label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </details>
                   </div>
                 </article>
               );
