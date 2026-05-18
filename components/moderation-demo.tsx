@@ -344,14 +344,7 @@ export function ModerationDemo() {
       <section className="topbar">
         <div>
           <p className="eyebrow">Vercel Preview</p>
-          <div className="title-row">
-            <h1>Comment Moderation Demo</h1>
-            <img
-              className="title-qr"
-              src="/QRcode.svg"
-              alt="Comment moderation demo QR code"
-            />
-          </div>
+          <h1>Comment Moderation Demo</h1>
         </div>
         <aside className="summary-panel" aria-label="Current settings">
           <div className="summary-title">Current settings</div>
@@ -476,6 +469,14 @@ export function ModerationDemo() {
         </div>
 
         <aside className="settings-panel">
+          <div className="qr-panel" aria-label="Demo QR code">
+            <img
+              className="side-qr"
+              src="/QRcode.svg"
+              alt="Comment moderation demo QR code"
+            />
+          </div>
+
           <details className="control-panel settings-dropdown">
             <summary>Setting</summary>
             <div className="settings-content">

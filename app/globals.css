@@ -123,28 +123,11 @@ p {
 }
 
 h1 {
+  max-width: 760px;
   margin-bottom: 0;
   font-size: clamp(34px, 5vw, 64px);
   line-height: 1;
   letter-spacing: 0;
-}
-
-.title-row {
-  display: flex;
-  max-width: 900px;
-  align-items: center;
-  gap: 22px;
-}
-
-.title-qr {
-  width: clamp(112px, 12vw, 148px);
-  height: clamp(112px, 12vw, 148px);
-  flex: 0 0 auto;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #ffffff;
-  padding: 8px;
-  box-shadow: var(--shadow);
 }
 
 h2 {
@@ -436,6 +419,25 @@ summary {
   gap: 18px;
 }
 
+.qr-panel {
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+
+.side-qr {
+  width: min(100%, 236px);
+  aspect-ratio: 1;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px;
+}
+
 .settings-dropdown {
   display: block;
 }
@@ -552,18 +554,6 @@ input[type="range"] {
 
   h1 {
     font-size: 36px;
-  }
-
-  .title-row {
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 14px;
-  }
-
-  .title-qr {
-    width: 104px;
-    height: 104px;
-    padding: 6px;
   }
 
   .comment-card {
