@@ -11,6 +11,9 @@ import {
   SAMPLE_COMMENTS,
 } from "@/lib/moderation";
 
+const CLIENT_NAME_KEY = "comment-moderation-client-name";
+const COMMENT_BATCH_SIZE = 5;
+
 async function classifyText(
   text: string,
   threshold: number,
@@ -45,13 +48,16 @@ async function fetchSharedComments(): Promise<DemoComment[]> {
   return (await response.json()) as DemoComment[];
 }
 
-async function createSharedComment(text: string): Promise<DemoComment> {
+async function createSharedComment(
+  text: string,
+  user: string,
+): Promise<DemoComment> {
   const response = await fetch("/api/comments", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ text, user: "You" }),
+    body: JSON.stringify({ text, user }),
   });
 
   if (!response.ok) {
@@ -86,10 +92,6 @@ function shouldHideComment(
   return predictedLabels.some((label) => blockedLabels.includes(label));
 }
 
-function formatPercent(value: number): string {
-  return `${Math.round(value * 100)}%`;
-}
-
 function initials(user: string): string {
   return user.slice(0, 1).toUpperCase() || "U";
 }
@@ -104,9 +106,23 @@ export function ModerationDemo() {
   ]);
   const [threshold, setThreshold] = useState(0.5);
   const [newComment, setNewComment] = useState("");
-  const [isClassifying, setIsClassifying] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [clientName, setClientName] = useState("You");
+  const [nameDraft, setNameDraft] = useState("");
+  const [isNameDialogOpen, setIsNameDialogOpen] = useState(false);
+  const [visibleCommentCount, setVisibleCommentCount] =
+    useState(COMMENT_BATCH_SIZE);
+
+  useEffect(() => {
+    const storedName = window.localStorage.getItem(CLIENT_NAME_KEY)?.trim();
+    if (storedName) {
+      setClientName(storedName);
+      return;
+    }
+
+    setIsNameDialogOpen(true);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -143,7 +159,6 @@ export function ModerationDemo() {
     let cancelled = false;
 
     async function classifyAll() {
-      setIsClassifying(true);
       setError(null);
 
       try {
@@ -171,10 +186,6 @@ export function ModerationDemo() {
             })),
           );
         }
-      } finally {
-        if (!cancelled) {
-          setIsClassifying(false);
-        }
       }
     }
 
@@ -198,6 +209,8 @@ export function ModerationDemo() {
 
   const source = runtimeComments.find((comment) => comment.classification)
     ?.classification?.source;
+  const visibleComments = runtimeComments.slice(0, visibleCommentCount);
+  const hasMoreComments = visibleCommentCount < runtimeComments.length;
 
   function toggleLabel(label: ModerationLabel) {
     setBlockedLabels((current) =>
@@ -220,9 +233,12 @@ export function ModerationDemo() {
     setError(null);
 
     try {
-      await createSharedComment(text);
+      await createSharedComment(text, clientName);
       setNewComment("");
       setComments(await fetchSharedComments());
+      setVisibleCommentCount((current) =>
+        Math.max(current, COMMENT_BATCH_SIZE),
+      );
     } catch (submitError) {
       setError(
         submitError instanceof Error
@@ -236,6 +252,15 @@ export function ModerationDemo() {
 
   function resetBlockedLabels() {
     setBlockedLabels([...LABELS]);
+  }
+
+  function handleNameSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const nextName = nameDraft.trim() || "Anonymous";
+    window.localStorage.setItem(CLIENT_NAME_KEY, nextName);
+    setClientName(nextName);
+    setIsNameDialogOpen(false);
   }
 
   async function clearCustomComments() {
@@ -253,14 +278,39 @@ export function ModerationDemo() {
 
   return (
     <main className="app-shell">
+      {isNameDialogOpen ? (
+        <div className="name-modal-backdrop" role="presentation">
+          <form
+            className="name-modal"
+            onSubmit={handleNameSubmit}
+            aria-label="Enter your name"
+          >
+            <h2>Enter your name</h2>
+            <p>Your comments will use this name.</p>
+            <input
+              autoFocus
+              value={nameDraft}
+              onChange={(event) => setNameDraft(event.target.value)}
+              placeholder="Your name"
+            />
+            <button type="submit" className="primary-button full-width">
+              Continue
+            </button>
+          </form>
+        </div>
+      ) : null}
+
       <section className="topbar">
         <div>
           <p className="eyebrow">Vercel Preview</p>
-          <h1>Comment Moderation Demo</h1>
-          <p className="lede">
-            A Next.js version of the Gradio prototype, ready for Vercel and
-            prepared for an external BERT inference API.
-          </p>
+          <div className="title-row">
+            <h1>Comment Moderation Demo</h1>
+            <img
+              className="title-qr"
+              src="/QRcode.svg"
+              alt="Comment moderation demo QR code"
+            />
+          </div>
         </div>
         <aside className="summary-panel" aria-label="Current settings">
           <div className="summary-title">Current settings</div>
@@ -315,17 +365,12 @@ export function ModerationDemo() {
 
           <section className="comments-wrap" aria-live="polite">
             {error ? <div className="error-box">{error}</div> : null}
-            {isClassifying ? (
-              <div className="loading-line">Refreshing classifications...</div>
-            ) : null}
 
-            {runtimeComments.map((comment) => {
+            {visibleComments.map((comment) => {
               const predictedLabels =
                 comment.classification?.predictedLabels ?? [];
               const hidden = shouldHideComment(predictedLabels, blockedLabels);
-              const visibleTags = predictedLabels.filter((label) =>
-                blockedLabels.includes(label),
-              );
+              const visibleTags = predictedLabels;
 
               return (
                 <article className="comment-card" key={comment.id}>
@@ -363,72 +408,78 @@ export function ModerationDemo() {
                     ) : (
                       <p className="comment-text">{comment.text}</p>
                     )}
-
-                    {comment.classification ? (
-                      <div className="prob-grid">
-                        {LABELS.map((label) => (
-                          <div className="prob-item" key={label}>
-                            <span>{label}</span>
-                            <strong>
-                              {formatPercent(
-                                comment.classification?.results[label].prob ??
-                                  0,
-                              )}
-                            </strong>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
                   </div>
                 </article>
               );
             })}
+
+            {hasMoreComments ? (
+              <button
+                type="button"
+                className="show-more-button"
+                onClick={() =>
+                  setVisibleCommentCount((current) =>
+                    Math.min(
+                      current + COMMENT_BATCH_SIZE,
+                      runtimeComments.length,
+                    ),
+                  )
+                }
+              >
+                Show 5 more comments
+              </button>
+            ) : null}
           </section>
         </div>
 
-        <aside className="control-panel settings-panel">
-          <div>
-            <h2>Settings</h2>
-            <p>
-              A comment is hidden when at least one selected label is predicted
-              above the threshold.
-            </p>
-          </div>
+        <aside className="settings-panel">
+          <details className="control-panel settings-dropdown">
+            <summary>Setting</summary>
+            <div className="settings-content">
+              <div>
+                <h2>Settings</h2>
+                <p>
+                  A comment is hidden when at least one selected label is
+                  predicted above the threshold.
+                </p>
+              </div>
 
-          <fieldset className="checkbox-list">
-            <legend>Blocked labels</legend>
-            {LABELS.map((label) => (
-              <label className="checkbox-item" key={label}>
+              <fieldset className="checkbox-list">
+                <legend>Blocked labels</legend>
+                {LABELS.map((label) => (
+                  <label className="checkbox-item" key={label}>
+                    <input
+                      type="checkbox"
+                      checked={blockedLabels.includes(label)}
+                      onChange={() => toggleLabel(label)}
+                    />
+                    <span>{label}</span>
+                  </label>
+                ))}
+              </fieldset>
+
+              <label className="slider-control">
+                <span>Threshold</span>
+                <strong>{threshold.toFixed(2)}</strong>
                 <input
-                  type="checkbox"
-                  checked={blockedLabels.includes(label)}
-                  onChange={() => toggleLabel(label)}
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={threshold}
+                  onChange={(event) => setThreshold(Number(event.target.value))}
                 />
-                <span>{label}</span>
               </label>
-            ))}
-          </fieldset>
 
-          <label className="slider-control">
-            <span>Threshold</span>
-            <strong>{threshold.toFixed(2)}</strong>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value={threshold}
-              onChange={(event) => setThreshold(Number(event.target.value))}
-            />
-          </label>
-
-          <button
-            type="button"
-            className="primary-button full-width"
-            onClick={resetBlockedLabels}
-          >
-            Reset blocked labels
-          </button>
+              <button
+                type="button"
+                className="primary-button full-width"
+                onClick={resetBlockedLabels}
+              >
+                Reset blocked labels
+              </button>
+            </div>
+          </details>
         </aside>
       </section>
     </main>
