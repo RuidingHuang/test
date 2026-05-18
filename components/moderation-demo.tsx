@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   ClassificationResponse,
@@ -14,16 +14,13 @@ import {
 const CLIENT_NAME_KEY = "comment-moderation-client-name";
 const COMMENT_BATCH_SIZE = 5;
 
-async function classifyText(
-  text: string,
-  threshold: number,
-): Promise<ClassificationResponse> {
+async function classifyText(text: string): Promise<ClassificationResponse> {
   const response = await fetch("/api/classify", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ text, threshold }),
+    body: JSON.stringify({ text }),
   });
 
   if (!response.ok) {
@@ -92,8 +89,38 @@ function shouldHideComment(
   return predictedLabels.some((label) => blockedLabels.includes(label));
 }
 
+function classifyLabelsLocally(
+  classification: ClassificationResponse | null,
+  threshold: number,
+): ModerationLabel[] {
+  if (!classification) {
+    return [];
+  }
+
+  return LABELS.filter(
+    (label) => classification.results[label].prob >= threshold,
+  );
+}
+
 function initials(user: string): string {
   return user.slice(0, 1).toUpperCase() || "U";
+}
+
+function commentsAreEqual(left: DemoComment[], right: DemoComment[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((comment, index) => {
+    const other = right[index];
+    return (
+      other !== undefined &&
+      comment.id === other.id &&
+      comment.user === other.user &&
+      comment.time === other.time &&
+      comment.text === other.text
+    );
+  });
 }
 
 export function ModerationDemo() {
@@ -113,6 +140,7 @@ export function ModerationDemo() {
   const [isNameDialogOpen, setIsNameDialogOpen] = useState(false);
   const [visibleCommentCount, setVisibleCommentCount] =
     useState(COMMENT_BATCH_SIZE);
+  const classificationCache = useRef(new Map<string, ClassificationResponse>());
 
   useEffect(() => {
     const storedName = window.localStorage.getItem(CLIENT_NAME_KEY)?.trim();
@@ -131,7 +159,11 @@ export function ModerationDemo() {
       try {
         const sharedComments = await fetchSharedComments();
         if (!cancelled) {
-          setComments(sharedComments);
+          setComments((currentComments) =>
+            commentsAreEqual(currentComments, sharedComments)
+              ? currentComments
+              : sharedComments,
+          );
         }
       } catch (loadError) {
         if (!cancelled) {
@@ -163,10 +195,18 @@ export function ModerationDemo() {
 
       try {
         const classified = await Promise.all(
-          comments.map(async (comment) => ({
-            ...comment,
-            classification: await classifyText(comment.text, threshold),
-          })),
+          comments.map(async (comment): Promise<RuntimeComment> => {
+            const cachedClassification = classificationCache.current.get(
+              comment.text,
+            );
+            if (cachedClassification) {
+              return { ...comment, classification: cachedClassification };
+            }
+
+            const classification = await classifyText(comment.text);
+            classificationCache.current.set(comment.text, classification);
+            return { ...comment, classification };
+          }),
         );
 
         if (!cancelled) {
@@ -194,17 +234,18 @@ export function ModerationDemo() {
     return () => {
       cancelled = true;
     };
-  }, [comments, threshold]);
+  }, [comments]);
 
   const hiddenCount = useMemo(
     () =>
-      runtimeComments.filter((comment) =>
-        shouldHideComment(
-          comment.classification?.predictedLabels ?? [],
-          blockedLabels,
-        ),
-      ).length,
-    [blockedLabels, runtimeComments],
+      runtimeComments.filter((comment) => {
+        const predictedLabels = classifyLabelsLocally(
+          comment.classification,
+          threshold,
+        );
+        return shouldHideComment(predictedLabels, blockedLabels);
+      }).length,
+    [blockedLabels, runtimeComments, threshold],
   );
 
   const source = runtimeComments.find((comment) => comment.classification)
@@ -367,8 +408,10 @@ export function ModerationDemo() {
             {error ? <div className="error-box">{error}</div> : null}
 
             {visibleComments.map((comment) => {
-              const predictedLabels =
-                comment.classification?.predictedLabels ?? [];
+              const predictedLabels = classifyLabelsLocally(
+                comment.classification,
+                threshold,
+              );
               const hidden = shouldHideComment(predictedLabels, blockedLabels);
               const visibleTags = predictedLabels;
 

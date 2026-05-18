@@ -1,12 +1,16 @@
 import { NextResponse } from "next/server";
 
-import { emptyResults, LABELS, ModerationLabel } from "@/lib/moderation";
+import {
+  emptyResults,
+  LABELS,
+  LabelResult,
+  ModerationLabel,
+} from "@/lib/moderation";
 
 export const runtime = "nodejs";
 
 type RequestPayload = {
   text?: unknown;
-  threshold?: unknown;
 };
 
 type ExternalLabelResult = {
@@ -19,6 +23,17 @@ type ExternalClassification = {
   threshold?: unknown;
   results?: Record<string, ExternalLabelResult>;
 };
+
+type NormalizedClassification = {
+  text: string;
+  threshold: number;
+  results: Record<ModerationLabel, LabelResult>;
+  predictedLabels: ModerationLabel[];
+  source: "mock" | "model-api";
+};
+
+const DEFAULT_CLASSIFICATION_THRESHOLD = 0.5;
+const classificationCache = new Map<string, NormalizedClassification>();
 
 const TERM_WEIGHTS: Record<ModerationLabel, Array<[RegExp, number]>> = {
   toxic: [
@@ -57,13 +72,6 @@ function clampProbability(value: number): number {
   return Math.max(0, Math.min(0.99, Number(value.toFixed(4))));
 }
 
-function normalizeThreshold(value: unknown): number {
-  if (typeof value !== "number" || Number.isNaN(value)) {
-    return 0.5;
-  }
-  return Math.max(0, Math.min(1, value));
-}
-
 function validateText(value: unknown): string {
   if (typeof value !== "string") {
     throw new Error("Text must be a string.");
@@ -80,7 +88,7 @@ function validateText(value: unknown): string {
   return text;
 }
 
-function buildMockClassification(text: string, threshold: number) {
+function buildMockClassification(text: string): NormalizedClassification {
   const results = emptyResults();
 
   for (const label of LABELS) {
@@ -104,7 +112,7 @@ function buildMockClassification(text: string, threshold: number) {
     const prob = clampProbability(score);
     results[label] = {
       prob,
-      pred: prob >= threshold ? 1 : 0,
+      pred: prob >= DEFAULT_CLASSIFICATION_THRESHOLD ? 1 : 0,
     };
   }
 
@@ -112,7 +120,7 @@ function buildMockClassification(text: string, threshold: number) {
 
   return {
     text,
-    threshold,
+    threshold: DEFAULT_CLASSIFICATION_THRESHOLD,
     results,
     predictedLabels,
     source: "mock" as const,
@@ -122,8 +130,7 @@ function buildMockClassification(text: string, threshold: number) {
 function normalizeExternalResponse(
   data: ExternalClassification,
   fallbackText: string,
-  fallbackThreshold: number,
-) {
+): NormalizedClassification {
   const results = emptyResults();
   const externalResults = data.results ?? {};
 
@@ -131,7 +138,11 @@ function normalizeExternalResponse(
     const raw = externalResults[label];
     const prob = typeof raw?.prob === "number" ? raw.prob : 0;
     const pred =
-      typeof raw?.pred === "number" ? raw.pred : prob >= fallbackThreshold ? 1 : 0;
+      typeof raw?.pred === "number"
+        ? raw.pred
+        : prob >= DEFAULT_CLASSIFICATION_THRESHOLD
+          ? 1
+          : 0;
 
     results[label] = {
       prob: clampProbability(prob),
@@ -142,14 +153,16 @@ function normalizeExternalResponse(
   return {
     text: typeof data.text === "string" ? data.text : fallbackText,
     threshold:
-      typeof data.threshold === "number" ? data.threshold : fallbackThreshold,
+      typeof data.threshold === "number"
+        ? data.threshold
+        : DEFAULT_CLASSIFICATION_THRESHOLD,
     results,
     predictedLabels: LABELS.filter((label) => results[label].pred === 1),
     source: "model-api" as const,
   };
 }
 
-async function classifyWithModelApi(text: string, threshold: number) {
+async function classifyWithModelApi(text: string) {
   const baseUrl = process.env.MODEL_API_URL?.replace(/\/$/, "");
   if (!baseUrl) {
     return null;
@@ -160,7 +173,7 @@ async function classifyWithModelApi(text: string, threshold: number) {
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ text, threshold }),
+    body: JSON.stringify({ text }),
     cache: "no-store",
   });
 
@@ -169,19 +182,29 @@ async function classifyWithModelApi(text: string, threshold: number) {
   }
 
   const data = (await response.json()) as ExternalClassification;
-  return normalizeExternalResponse(data, text, threshold);
+  return normalizeExternalResponse(data, text);
 }
 
 export async function POST(request: Request) {
   try {
     const payload = (await request.json()) as RequestPayload;
     const text = validateText(payload.text);
-    const threshold = normalizeThreshold(payload.threshold);
 
-    const modelResult = await classifyWithModelApi(text, threshold);
-    return NextResponse.json(
-      modelResult ?? buildMockClassification(text, threshold),
-    );
+    const cachedClassification = classificationCache.get(text);
+    if (cachedClassification) {
+      return NextResponse.json(cachedClassification);
+    }
+
+    let classification: NormalizedClassification;
+    try {
+      classification =
+        (await classifyWithModelApi(text)) ?? buildMockClassification(text);
+    } catch {
+      classification = buildMockClassification(text);
+    }
+
+    classificationCache.set(text, classification);
+    return NextResponse.json(classification);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unable to classify text.";
