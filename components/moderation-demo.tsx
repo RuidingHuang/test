@@ -20,10 +20,6 @@ type FeedbackDraft = {
   text: string;
 };
 
-type FeedbackRow = {
-  clean_text: string;
-} & Record<ModerationLabel, 0 | 1>;
-
 async function classifyText(text: string): Promise<ClassificationResponse> {
   const response = await fetch("/api/classify", {
     method: "POST",
@@ -89,25 +85,6 @@ async function clearSharedCustomComments(): Promise<DemoComment[]> {
   return (await response.json()) as DemoComment[];
 }
 
-async function importFeedback(rows: FeedbackRow[]): Promise<{ count: number }> {
-  const response = await fetch("/api/feedback", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ rows }),
-  });
-
-  if (!response.ok) {
-    const data = (await response.json().catch(() => null)) as
-      | { detail?: string }
-      | null;
-    throw new Error(data?.detail ?? "Unable to import feedback.");
-  }
-
-  return (await response.json()) as { count: number };
-}
-
 function shouldHideComment(
   predictedLabels: ModerationLabel[],
   blockedLabels: ModerationLabel[],
@@ -161,14 +138,36 @@ function labelsAreEqual(
   );
 }
 
-function toFeedbackRow(text: string, labels: ModerationLabel[]): FeedbackRow {
-  return LABELS.reduce(
-    (row, label) => {
-      row[label] = labels.includes(label) ? 1 : 0;
-      return row;
-    },
-    { clean_text: text } as FeedbackRow,
+function csvCell(value: string | number): string {
+  const text = String(value);
+  if (!/[",\r\n]/.test(text)) {
+    return text;
+  }
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function buildFeedbackCsv(feedback: FeedbackDraft[]): string {
+  const header = ["clean_text", ...LABELS].join(",");
+  const rows = feedback.map((draft) =>
+    [
+      csvCell(draft.text),
+      ...LABELS.map((label) => (draft.labels.includes(label) ? 1 : 0)),
+    ].join(","),
   );
+
+  return `${[header, ...rows].join("\n")}\n`;
+}
+
+function downloadCsv(filename: string, content: string) {
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 export function ModerationDemo() {
@@ -189,7 +188,6 @@ export function ModerationDemo() {
   const [feedbackDrafts, setFeedbackDrafts] = useState<
     Record<number, FeedbackDraft>
   >({});
-  const [isImportingFeedback, setIsImportingFeedback] = useState(false);
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
   const [visibleCommentCount, setVisibleCommentCount] =
     useState(COMMENT_BATCH_SIZE);
@@ -377,33 +375,16 @@ export function ModerationDemo() {
     });
   }
 
-  async function handleImportFeedback() {
-    const rows = changedFeedback.map((draft) =>
-      toFeedbackRow(draft.text, draft.labels),
-    );
-
-    if (rows.length === 0) {
-      setFeedbackMessage("No feedback changes to import.");
+  function handleDownloadFeedback() {
+    if (changedFeedback.length === 0) {
+      setFeedbackMessage("No feedback changes to download.");
       return;
     }
 
-    setIsImportingFeedback(true);
     setError(null);
-    setFeedbackMessage(null);
-
-    try {
-      const result = await importFeedback(rows);
-      setFeedbackDrafts({});
-      setFeedbackMessage(`Imported ${result.count} feedback row(s).`);
-    } catch (feedbackError) {
-      setError(
-        feedbackError instanceof Error
-          ? feedbackError.message
-          : "Unable to import feedback.",
-      );
-    } finally {
-      setIsImportingFeedback(false);
-    }
+    downloadCsv("feedback.csv", buildFeedbackCsv(changedFeedback));
+    setFeedbackDrafts({});
+    setFeedbackMessage(`Downloaded ${changedFeedback.length} feedback row(s).`);
   }
 
   function handleNameSubmit(event: FormEvent<HTMLFormElement>) {
@@ -518,10 +499,10 @@ export function ModerationDemo() {
               <button
                 type="button"
                 className="primary-button"
-                disabled={changedFeedback.length === 0 || isImportingFeedback}
-                onClick={() => void handleImportFeedback()}
+                disabled={changedFeedback.length === 0}
+                onClick={handleDownloadFeedback}
               >
-                {isImportingFeedback ? "Importing..." : "Import feedback"}
+                Download feedback CSV
               </button>
             </div>
             {feedbackMessage ? (
