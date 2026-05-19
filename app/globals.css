@@ -354,6 +354,13 @@ input[type="range"]:focus-visible {
   font-weight: 900;
 }
 
+.feedback-toolbar p {
+  margin-bottom: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .comment-card {
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr);
@@ -505,6 +512,10 @@ summary {
   width: 15px;
   height: 15px;
   accent-color: var(--accent);
+}
+
+.feedback-confirm-button {
+  margin-top: 12px;
 }
 
 .settings-panel {
